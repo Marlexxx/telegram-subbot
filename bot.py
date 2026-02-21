@@ -5,8 +5,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-TOKEN = "8572534648:AAF1xbYQUnp93W81K8SmQF7UenpKf6cc4O0"          # @BotFather token
-CHAT_ID = "2035807800"     # Ton chat ID (utilise /start pour le voir)
+TOKEN = "8572534648:AAF1xbYQUnp93W81K8SmQF7UenpKf6cc4O0"
+CHAT_ID = "2035807800"
 DATA_FILE = "subs_data.json"
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -24,7 +24,6 @@ def save_data(data: dict):
 
 
 def pct_emoji(pct: float) -> str:
-    """Retourne le % formaté avec couleur emoji."""
     if pct > 0:
         return f"📈 +{pct:.1f}%"
     elif pct < 0:
@@ -34,13 +33,21 @@ def pct_emoji(pct: float) -> str:
 
 
 def week_key(date: datetime) -> str:
-    """Lundi de la semaine comme clé."""
     monday = date - timedelta(days=date.weekday())
     return monday.strftime("%Y-%m-%d")
 
 
 def month_key(date: datetime) -> str:
     return date.strftime("%Y-%m")
+
+
+def get_subs_day(data: dict, date_str: str) -> int | None:
+    """Calcule les subs du jour = total du jour - total de la veille."""
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    yesterday_str = (d - timedelta(days=1)).strftime("%Y-%m-%d")
+    if date_str in data and yesterday_str in data:
+        return data[date_str] - data[yesterday_str]
+    return None
 
 
 # ─── COMMANDES ────────────────────────────────────────────────────────────────
@@ -51,7 +58,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"👋 Bot de suivi des abonnés lancé !\n"
         f"Ton Chat ID : <code>{chat_id}</code>\n\n"
         f"📌 Commandes disponibles :\n"
-        f"  /add &lt;nombre&gt; — Enregistrer les subs du jour\n"
+        f"  /add &lt;nombre&gt; — Enregistrer le total membres du canal\n"
         f"  /today — Voir le récap du jour\n"
         f"  /weekly — Récap de la semaine\n"
         f"  /monthly — Récap du mois\n"
@@ -61,38 +68,42 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Enregistre le nombre de subs du jour. Usage: /add 1500"""
+    """Enregistre le total membres du canal. Usage: /add 4480"""
     if not ctx.args or not ctx.args[0].isdigit():
-        await update.message.reply_text("❌ Usage : /add <nombre>\nExemple : /add 1500")
+        await update.message.reply_text("❌ Usage : /add <nombre>\nExemple : /add 4480")
         return
 
-    count = int(ctx.args[0])
+    total = int(ctx.args[0])
     today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     data = load_data()
 
-    # Sauvegarde
-    data[today] = count
+    data[today] = total
     save_data(data)
 
-    # Calcul du % vs hier
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    msg = f"✅ <b>Subs enregistrés pour le {today}</b>\n\n"
-    msg += f"👥 <b>Subs day : {count:,}</b>\n"
+    msg = f"✅ <b>Enregistré pour le {today}</b>\n\n"
+    msg += f"👥 Membres du canal : <b>{total:,}</b>\n"
 
-    if yesterday in data and data[yesterday] > 0:
-        prev = data[yesterday]
-        diff = count - prev
-        pct = (diff / prev) * 100
-        msg += f"Variation vs hier : {pct_emoji(pct)}\n"
-        msg += f"Différence : {'+'if diff>=0 else ''}{diff:,} abonnés\n"
+    if yesterday in data:
+        prev_total = data[yesterday]
+        subs_day_today = total - prev_total
+        msg += f"📊 Subs day : <b>+{subs_day_today:,}</b>\n"
+
+        # % entre subs day d'hier et subs day d'aujourd'hui
+        subs_day_yesterday = get_subs_day(data, yesterday)
+        if subs_day_yesterday is not None and subs_day_yesterday > 0:
+            pct = ((subs_day_today - subs_day_yesterday) / subs_day_yesterday) * 100
+            msg += f"📈 Croissance subs day : {pct_emoji(pct)}\n"
+            msg += f"(Hier : +{subs_day_yesterday:,} subs | Aujourd'hui : +{subs_day_today:,} subs)"
+        else:
+            msg += f"ℹ️ Pas assez de données pour comparer les subs day."
     else:
-        msg += "ℹ️ Pas de données hier pour comparer.\n"
+        msg += "ℹ️ Pas de données hier pour calculer les subs day."
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Affiche le récap du jour."""
     data = load_data()
     today_str = datetime.now().strftime("%Y-%m-%d")
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -101,26 +112,30 @@ async def today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Aucune donnée pour aujourd'hui. Utilise /add <nombre>")
         return
 
-    count = data[today_str]
+    total = data[today_str]
     msg = f"📊 <b>Récap du {today_str}</b>\n\n"
-    msg += f"👥 <b>Subs day : {count:,}</b>\n"
+    msg += f"👥 Membres du canal : <b>{total:,}</b>\n"
 
     if yesterday_str in data:
-        prev = data[yesterday_str]
-        diff = count - prev
-        pct = (diff / prev) * 100 if prev > 0 else 0
-        msg += f"Variation : {pct_emoji(pct)}\n"
-        msg += f"Différence : {'+'if diff>=0 else ''}{diff:,} abonnés\n"
+        prev_total = data[yesterday_str]
+        subs_day_today = total - prev_total
+        msg += f"📊 Subs day : <b>+{subs_day_today:,}</b>\n"
+
+        subs_day_yesterday = get_subs_day(data, yesterday_str)
+        if subs_day_yesterday is not None and subs_day_yesterday > 0:
+            pct = ((subs_day_today - subs_day_yesterday) / subs_day_yesterday) * 100
+            msg += f"📈 Croissance subs day : {pct_emoji(pct)}\n"
+            msg += f"(Hier : +{subs_day_yesterday:,} subs | Aujourd'hui : +{subs_day_today:,} subs)"
+    else:
+        msg += "ℹ️ Pas de données hier pour calculer les subs day."
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def weekly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Récap de la semaine courante vs semaine précédente."""
     data = load_data()
     now = datetime.now()
 
-    # Semaine courante : lundi → aujourd'hui
     monday_this = now - timedelta(days=now.weekday())
     monday_prev = monday_this - timedelta(weeks=1)
     sunday_prev = monday_this - timedelta(days=1)
@@ -136,134 +151,88 @@ async def weekly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return result
 
     this_week = get_week_data(monday_this, now)
-    prev_week = get_week_data(monday_prev, sunday_prev)
-
-    msg = f"📅 <b>Récap Hebdomadaire</b>\n"
-    msg += f"Semaine du {monday_this.strftime('%d/%m')} au {now.strftime('%d/%m/%Y')}\n\n"
 
     if not this_week:
         await update.message.reply_text("❌ Aucune donnée cette semaine.")
         return
 
-    # Subs début et fin de semaine courante
     sorted_this = sorted(this_week.items())
-    first_day, first_count = sorted_this[0]
     last_day, last_count = sorted_this[-1]
 
-    msg += f"👥 <b>Subs actuels : {last_count:,}</b>\n"
-    msg += f"Début de semaine : {first_count:,}\n"
+    # Total subs day de la semaine
+    total_subs_week = 0
+    for date_str, _ in sorted_this:
+        sd = get_subs_day(data, date_str)
+        if sd is not None:
+            total_subs_week += sd
 
-    week_diff = last_count - first_count
-    if first_count > 0:
-        week_pct = (week_diff / first_count) * 100
-        msg += f"Croissance semaine : {pct_emoji(week_pct)}\n"
-        msg += f"Différence : {'+'if week_diff>=0 else ''}{week_diff:,} abonnés\n"
+    msg = f"📅 <b>Récap Hebdomadaire</b>\n"
+    msg += f"Semaine du {monday_this.strftime('%d/%m')} au {now.strftime('%d/%m/%Y')}\n\n"
+    msg += f"👥 Membres du canal : <b>{last_count:,}</b>\n"
+    msg += f"📊 Subs cette semaine : <b>+{total_subs_week:,}</b>\n"
 
-    # Comparaison avec semaine précédente
-    if prev_week:
-        sorted_prev = sorted(prev_week.items())
-        prev_last = sorted_prev[-1][1]
-        vs_prev_diff = last_count - prev_last
-        vs_prev_pct = (vs_prev_diff / prev_last) * 100 if prev_last > 0 else 0
-        msg += f"\nVs semaine précédente : {pct_emoji(vs_prev_pct)}\n"
-        msg += f"(Semaine préc. terminée à {prev_last:,} subs)"
-    else:
-        msg += "\nℹ️ Pas de données la semaine précédente."
-
-    # Détail jour par jour
     msg += "\n\n📆 <b>Détail par jour :</b>\n"
-    prev_val = None
     for date_str, count in sorted_this:
         d = datetime.strptime(date_str, "%Y-%m-%d")
         day_name = ["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"][d.weekday()]
-        if prev_val is not None and prev_val > 0:
-            diff = count - prev_val
-            pct = (diff / prev_val) * 100
-            arrow = "🟢" if diff >= 0 else "🔴"
-            msg += f"  {arrow} {day_name} {d.strftime('%d/%m')} : {count:,} ({'+' if diff>=0 else ''}{diff:,})\n"
+        sd = get_subs_day(data, date_str)
+        if sd is not None:
+            arrow = "🟢" if sd >= 0 else "🔴"
+            msg += f"  {arrow} {day_name} {d.strftime('%d/%m')} : {count:,} membres | +{sd:,} subs\n"
         else:
-            msg += f"  ⚪ {day_name} {d.strftime('%d/%m')} : {count:,}\n"
-        prev_val = count
+            msg += f"  ⚪ {day_name} {d.strftime('%d/%m')} : {count:,} membres\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def monthly(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Récap du mois courant vs mois précédent."""
     data = load_data()
     now = datetime.now()
 
     this_month = now.strftime("%Y-%m")
-    prev_month_dt = (now.replace(day=1) - timedelta(days=1))
-    prev_month = prev_month_dt.strftime("%Y-%m")
-
     this_month_data = {k: v for k, v in data.items() if k.startswith(this_month)}
-    prev_month_data = {k: v for k, v in data.items() if k.startswith(prev_month)}
 
     if not this_month_data:
         await update.message.reply_text("❌ Aucune donnée ce mois-ci.")
         return
 
     sorted_this = sorted(this_month_data.items())
-    first_day, first_count = sorted_this[0]
     last_day, last_count = sorted_this[-1]
 
+    total_subs_month = 0
+    for date_str, _ in sorted_this:
+        sd = get_subs_day(data, date_str)
+        if sd is not None:
+            total_subs_month += sd
+
     msg = f"🗓️ <b>Récap Mensuel — {now.strftime('%B %Y').capitalize()}</b>\n\n"
-    msg += f"👥 <b>Subs actuels : {last_count:,}</b>\n"
-    msg += f"Début du mois : {first_count:,}\n"
+    msg += f"👥 Membres du canal : <b>{last_count:,}</b>\n"
+    msg += f"📊 Subs ce mois : <b>+{total_subs_month:,}</b>\n"
 
-    month_diff = last_count - first_count
-    if first_count > 0:
-        month_pct = (month_diff / first_count) * 100
-        msg += f"Croissance du mois : {pct_emoji(month_pct)}\n"
-        msg += f"Différence : {'+'if month_diff>=0 else ''}{month_diff:,} abonnés\n"
-
-    if prev_month_data:
-        sorted_prev = sorted(prev_month_data.items())
-        prev_last = sorted_prev[-1][1]
-        vs_prev_diff = last_count - prev_last
-        vs_prev_pct = (vs_prev_diff / prev_last) * 100 if prev_last > 0 else 0
-        msg += f"\nVs mois précédent : {pct_emoji(vs_prev_pct)}\n"
-        msg += f"(Mois préc. terminé à {prev_last:,} subs)"
-    else:
-        msg += "\nℹ️ Pas de données le mois précédent."
-
-    # Récap semaine par semaine dans le mois
     msg += "\n\n📆 <b>Détail par semaine :</b>\n"
     weeks = {}
     for date_str, count in sorted_this:
         d = datetime.strptime(date_str, "%Y-%m-%d")
         wk = week_key(d)
         if wk not in weeks:
-            weeks[wk] = {"dates": [], "counts": []}
-        weeks[wk]["dates"].append(date_str)
-        weeks[wk]["counts"].append(count)
+            weeks[wk] = []
+        weeks[wk].append((date_str, count))
 
-    prev_week_last = None
     for wk, wdata in sorted(weeks.items()):
         wk_start = datetime.strptime(wk, "%Y-%m-%d")
         wk_label = f"Sem. {wk_start.strftime('%d/%m')}"
-        wk_last = wdata["counts"][-1]
-        wk_first = wdata["counts"][0]
-        if prev_week_last is not None and prev_week_last > 0:
-            d = wk_last - prev_week_last
-            p = (d / prev_week_last) * 100
-            arrow = "🟢" if d >= 0 else "🔴"
-            msg += f"  {arrow} {wk_label} : {wk_last:,} ({'+' if d>=0 else ''}{d:,})\n"
-        else:
-            msg += f"  ⚪ {wk_label} : {wk_last:,}\n"
-        prev_week_last = wk_last
+        wk_subs = sum(get_subs_day(data, ds) or 0 for ds, _ in wdata)
+        wk_last_count = wdata[-1][1]
+        msg += f"  📅 {wk_label} : {wk_last_count:,} membres | +{wk_subs:,} subs\n"
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
 async def history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Affiche les 7 derniers jours."""
     data = load_data()
     now = datetime.now()
 
     msg = "📜 <b>Historique — 7 derniers jours</b>\n\n"
-    prev_val = None
 
     for i in range(6, -1, -1):
         d = now - timedelta(days=i)
@@ -271,18 +240,15 @@ async def history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         day_name = ["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"][d.weekday()]
 
         if key in data:
-            count = data[key]
-            if prev_val is not None and prev_val > 0:
-                diff = count - prev_val
-                pct = (diff / prev_val) * 100
-                arrow = "🟢" if diff >= 0 else "🔴"
-                msg += f"{arrow} <b>{day_name} {d.strftime('%d/%m')}</b> : {count:,} ({'+' if diff>=0 else ''}{diff:,} | {pct:+.1f}%)\n"
+            total = data[key]
+            sd = get_subs_day(data, key)
+            if sd is not None:
+                arrow = "🟢" if sd >= 0 else "🔴"
+                msg += f"{arrow} <b>{day_name} {d.strftime('%d/%m')}</b> : {total:,} membres | +{sd:,} subs\n"
             else:
-                msg += f"⚪ <b>{day_name} {d.strftime('%d/%m')}</b> : {count:,}\n"
-            prev_val = count
+                msg += f"⚪ <b>{day_name} {d.strftime('%d/%m')}</b> : {total:,} membres\n"
         else:
             msg += f"❓ <b>{day_name} {d.strftime('%d/%m')}</b> : pas de données\n"
-            prev_val = None
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
